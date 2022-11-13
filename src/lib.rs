@@ -28,54 +28,77 @@ impl Default for Decoder {
     }
 }
 
-#[derive(Default, Clone)]
+#[derive(Default)]
 pub struct FontInfo {
     name: String,
     decoder: Decoder,
+    widths: Option<Widths>,
 }
 
 impl FontInfo {
-    pub fn decode(&self, data: &[u8], out: &mut String) -> Result<()> {
+    pub fn decode(&self, data: &[u8], out: &mut String) -> Result<f32> {
         // println!("decoded by {}, data: {:?}", self.name, data);
         let is_gbk = self.name.contains("GBK");
+        let mut width: f32 = 0.;
         match &self.decoder {
             Decoder::Cmap(ref cmap) => {
                 if data == &[16, 40] {
+                    let cp = u16::from_be_bytes(data.try_into().unwrap());
                     out.push('-');
+                    width += self
+                        .widths
+                        .as_ref()
+                        .map(|w| w.get(cp.into()) * 0.001)
+                        .unwrap_or(0.);
                 } else if is_gbk || data.starts_with(&[0xfe, 0xff]) {
                     // FIXME: really windows not chunks!?
                     for w in data.windows(2) {
                         let cp = u16::from_be_bytes(w.try_into().unwrap());
+                        width += self
+                            .widths
+                            .as_ref()
+                            .map(|w| w.get(cp.into()) * 0.001)
+                            .unwrap_or(0.);
                         if let Some(s) = cmap.get(cp) {
                             out.push_str(s);
                         }
                     }
                 } else {
-                    out.extend(
-                        data.iter()
-                            .filter_map(|&b| cmap.get(b.into()).map(|v| v.to_owned())),
-                    );
+                    out.extend(data.iter().filter_map(|&b| {
+                        width += self
+                            .widths
+                            .as_ref()
+                            .map(|w| w.get(b.into()) * 0.001)
+                            .unwrap_or(0.);
+                        cmap.get(b.into()).map(|v| v.to_owned())
+                    }));
                 }
-                Ok(())
+                Ok(width)
             }
             Decoder::Map(map) => {
-                out.extend(
-                    data.iter()
-                        .filter_map(|&b| map.get(b).map(|v| v.to_owned())),
-                );
-                Ok(())
+                out.extend(data.iter().filter_map(|&b| {
+                    width += self
+                        .widths
+                        .as_ref()
+                        .map(|w| w.get(b.into()) * 0.001)
+                        .unwrap_or(0.);
+                    map.get(b).map(|v| v.to_owned())
+                }));
+                Ok(width)
             }
             Decoder::None => {
                 if data.starts_with(&[0xfe, 0xff]) {
-                    utf16be_to_char(&data[2..]).try_for_each(|r| {
-                        r.map_or(Err(PdfError::Utf16Decode), |c| {
-                            out.push(c);
-                            Ok(())
+                    utf16be_to_char(&data[2..])
+                        .try_for_each(|r| {
+                            r.map_or(Err(PdfError::Utf16Decode), |c| {
+                                out.push(c);
+                                Ok(())
+                            })
                         })
-                    })
+                        .map(|_| width)
                 } else if let Ok(text) = std::str::from_utf8(data) {
                     out.push_str(text);
-                    Ok(())
+                    Ok(0.)
                 } else {
                     Err(PdfError::Utf16Decode)
                 }
@@ -127,6 +150,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
 
     fn add_font(&mut self, name: Name, font: RcRef<Font>) {
         let font_name = font.name.as_ref().unwrap().as_str();
+        let widths = font.widths(self.resolve).unwrap();
         // println!("Adding font \"{}\"", name.as_str());
         let decoder = if let Some(to_unicode) = font.to_unicode(self.resolve) {
             let cmap = to_unicode.unwrap();
@@ -161,6 +185,7 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             Rc::new(FontInfo {
                 name: font_name.to_string(),
                 decoder,
+                widths,
             }),
         );
     }
@@ -292,7 +317,7 @@ pub fn ops_with_text_state<'src, T: Resolve>(
 
 pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError> {
     let x_inline_threshold = 50.;
-    let x_threshold = 2.;
+    let x_threshold = 0.6;
     let y_threshold = 2.;
 
     let mut out = String::new();
@@ -302,17 +327,18 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
         let mut word = String::new();
         let x_factor = text_state.text_matrix.m11.abs();
         let y_factor = text_state.text_matrix.m22.abs();
+        let mut width = 0.;
 
         match op {
             Op::TextDraw { ref text } => {
-                text_state.font.decode(&text.data, &mut word)?;
+                width = text_state.font.decode(&text.data, &mut word)?;
             }
 
             Op::TextDrawAdjusted { ref array } => {
                 for data in array {
                     match data {
                         TextDrawAdjusted::Text(text) => {
-                            text_state.font.decode(&text.data, &mut word)?;
+                            width = text_state.font.decode(&text.data, &mut word)?;
                         }
                         &TextDrawAdjusted::Spacing(s) => {
                             if s.abs() > x_inline_threshold * x_factor {
@@ -354,6 +380,7 @@ pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError
             out.push_str(&word);
 
             prev_offset = text_offset;
+            prev_offset.x += width;
         }
     }
     Ok(out)
