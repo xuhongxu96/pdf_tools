@@ -30,15 +30,19 @@ impl Default for Decoder {
 
 #[derive(Default, Clone)]
 pub struct FontInfo {
+    name: String,
     decoder: Decoder,
 }
 
 impl FontInfo {
     pub fn decode(&self, data: &[u8], out: &mut String) -> Result<()> {
+        // println!("decoded by {}, data: {:?}", self.name, data);
+        let is_gbk = self.name.contains("GBK");
         match &self.decoder {
             Decoder::Cmap(ref cmap) => {
-                // FIXME: not sure the BOM is obligatory
-                if data.starts_with(&[0xfe, 0xff]) {
+                if data == &[16, 40] {
+                    out.push('-');
+                } else if is_gbk || data.starts_with(&[0xfe, 0xff]) {
                     // FIXME: really windows not chunks!?
                     for w in data.windows(2) {
                         let cp = u16::from_be_bytes(w.try_into().unwrap());
@@ -122,6 +126,8 @@ impl<'src, T: Resolve> FontCache<'src, T> {
     }
 
     fn add_font(&mut self, name: Name, font: RcRef<Font>) {
+        let font_name = font.name.as_ref().unwrap().as_str();
+        // println!("Adding font \"{}\"", name.as_str());
         let decoder = if let Some(to_unicode) = font.to_unicode(self.resolve) {
             let cmap = to_unicode.unwrap();
             Decoder::Cmap(cmap)
@@ -150,7 +156,13 @@ impl<'src, T: Resolve> FontCache<'src, T> {
             return;
         };
 
-        self.fonts.insert(name, Rc::new(FontInfo { decoder }));
+        self.fonts.insert(
+            name,
+            Rc::new(FontInfo {
+                name: font_name.to_string(),
+                decoder,
+            }),
+        );
     }
 
     fn get_by_font_name(&self, name: &Name) -> Rc<FontInfo> {
@@ -186,7 +198,17 @@ pub struct TextState {
     pub font: Rc<FontInfo>,
     pub font_size: f32,
     pub text_leading: f32,
+    pub matrix: Transform2D<f32, PdfSpace, PdfSpace>,
     pub text_matrix: Transform2D<f32, PdfSpace, PdfSpace>,
+}
+
+impl TextState {
+    pub fn text_offset(&self) -> Point {
+        Point {
+            x: self.matrix.m31 + self.text_matrix.m31,
+            y: self.matrix.m32 + self.text_matrix.m32,
+        }
+    }
 }
 
 pub fn ops_with_text_state<'src, T: Resolve>(
@@ -208,7 +230,11 @@ pub fn ops_with_text_state<'src, T: Resolve>(
 
                 match op {
                     Op::BeginText => {
-                        *state = Default::default();
+                        update_state(&|state: &mut TextState| {
+                            let old_matrix = state.matrix;
+                            *state = Default::default();
+                            state.matrix = old_matrix;
+                        });
                     }
                     Op::GraphicsState { ref name } => {
                         update_state(&|state: &mut TextState| {
@@ -245,6 +271,11 @@ pub fn ops_with_text_state<'src, T: Resolve>(
                             state.text_matrix = state.text_matrix.pre_translate(translation.into());
                         });
                     }
+                    Op::Transform { matrix } => {
+                        update_state(&|state: &mut TextState| {
+                            state.matrix = matrix.into();
+                        });
+                    }
                     Op::SetTextMatrix { matrix } => {
                         update_state(&|state: &mut TextState| {
                             state.text_matrix = matrix.into();
@@ -260,34 +291,69 @@ pub fn ops_with_text_state<'src, T: Resolve>(
 }
 
 pub fn page_text(page: &Page, resolve: &impl Resolve) -> Result<String, PdfError> {
-    let mut out = String::new();
+    let x_inline_threshold = 50.;
+    let x_threshold = 2.;
+    let y_threshold = 2.;
 
+    let mut out = String::new();
+    let mut prev_offset = Point::default();
     for (op, text_state) in ops_with_text_state(page, resolve) {
+        // println!("op: {:?}, {:?}", op, text_state.as_ref().matrix);
+        let mut word = String::new();
+        let x_factor = text_state.text_matrix.m11.abs();
+        let y_factor = text_state.text_matrix.m22.abs();
+
         match op {
-            Op::TextDraw { ref text } => text_state.font.decode(&text.data, &mut out)?,
+            Op::TextDraw { ref text } => {
+                text_state.font.decode(&text.data, &mut word)?;
+            }
+
             Op::TextDrawAdjusted { ref array } => {
                 for data in array {
-                    if let TextDrawAdjusted::Text(text) = data {
-                        text_state.font.decode(&text.data, &mut out)?;
+                    match data {
+                        TextDrawAdjusted::Text(text) => {
+                            text_state.font.decode(&text.data, &mut word)?;
+                        }
+                        &TextDrawAdjusted::Spacing(s) => {
+                            if s.abs() > x_inline_threshold * x_factor {
+                                word += " ";
+                            }
+                        }
                     }
                 }
             }
-            Op::TextNewline => {
-                out.push('\n');
-            }
-            Op::MoveTextPosition { translation } => {
-                if translation.y.abs() < f32::EPSILON {
-                    out.push('\n');
-                }
-            }
-            Op::SetTextMatrix { matrix } => {
-                if (matrix.f - text_state.text_matrix.m32).abs() < f32::EPSILON {
-                    out.push('\n');
-                } else {
-                    out.push('\t');
-                }
-            }
             _ => {}
+        }
+
+        if !word.is_empty() {
+            let text_offset = text_state.text_offset();
+            if (prev_offset.y - text_offset.y).abs() > y_factor * y_threshold
+                && !out.is_empty()
+                && !out.ends_with("\n")
+            {
+                out.push('\n');
+            } else if (prev_offset.x - text_offset.x).abs() > x_factor * x_threshold
+                && !out.is_empty()
+                && !out.ends_with(' ')
+            {
+                if let Some(ch0) = out.chars().last() {
+                    if let Some(ch1) = word.chars().next() {
+                        if ch0.is_ascii() && ch1.is_ascii_alphanumeric() {
+                            out.push(' ');
+                        }
+                    }
+                }
+            }
+
+            // out.push_str(&format!(
+            //     "({}, {}, diff: {})",
+            //     prev_offset.x / x_factor,
+            //     text_offset.x / x_factor,
+            //     (prev_offset.x - text_offset.x).abs() / x_factor
+            // ));
+            out.push_str(&word);
+
+            prev_offset = text_offset;
         }
     }
     Ok(out)
