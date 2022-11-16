@@ -7,10 +7,6 @@ edition = "2021"
 [features]
 unstable = []
 
-[[bench]]
-name = "render"
-harness = false
-
 [dependencies.pdf]
 default-features=false 
 git = "https://github.com/pdf-rs/pdf"

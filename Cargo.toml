@@ -1,8 +1,7 @@
 [workspace]
 members = [
     "render",
-    "view",
-    "examples/pdf2image",
+    "examples",
 ]
 [patch.crates-io]
 pathfinder_gl = { git = "https://github.com/servo/pathfinder" }

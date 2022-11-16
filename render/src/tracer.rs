@@ -8,9 +8,6 @@ use pathfinder_geometry::{
     transform2d::Transform2F,
     vector::Vector2F,
 };
-use pathfinder_content::{
-    stroke::{StrokeStyle},
-}; 
 use pdf::object::{Ref, XObject, ImageXObject, Resolve, Resources, MaybeRef};
 use font::Glyph;
 use pdf::font::Font as PdfFont;
@@ -32,7 +29,7 @@ pub struct TraceCache {
 }
 impl TraceCache {
     pub fn new() -> Self {
-        let standard_fonts = PathBuf::from(std::env::var_os("STANDARD_FONTS").expect("no STANDARD_FONTS"));
+        let standard_fonts = PathBuf::from(".");
 
         TraceCache {
             fonts: SyncCache::new(),
@@ -57,22 +54,22 @@ impl<'a> Tracer<'a> {
 }
 impl<'a> Backend for Tracer<'a> {
     fn set_clip_path(&mut self, path: Option<&Outline>) {
-        self.items.push(DrawItem::ClipPath(path.cloned()));
+        // self.items.push(DrawItem::ClipPath(path.cloned()));
     }
     fn draw(&mut self, outline: &Outline, mode: &DrawMode, _fill_rule: FillRule, transform: Transform2F) {
         let stroke = match *mode {
             DrawMode::FillStroke(_, _, fill, alpha, ref style) | DrawMode::Stroke(fill, alpha, ref style) => Some((fill, alpha, style.clone())),
             DrawMode::Fill(_, _) => None,
         };
-        self.items.push(DrawItem::Vector(VectorPath {
-            outline: outline.clone(),
-            fill: match *mode {
-                DrawMode::Fill(fill, alpha) | DrawMode::FillStroke(fill, alpha, _, _, _) => Some((fill, alpha)),
-                _ => None
-            },
-            stroke,
-            transform,
-        }));
+        // self.items.push(DrawItem::Vector(VectorPath {
+        //     outline: outline.clone(),
+        //     fill: match *mode {
+        //         DrawMode::Fill(fill, alpha) | DrawMode::FillStroke(fill, alpha, _, _, _) => Some((fill, alpha)),
+        //         _ => None
+        //     },
+        //     stroke,
+        //     transform,
+        // }));
     }
     fn set_view_box(&mut self, r: RectF) {
         self.view_box = r;
@@ -81,18 +78,18 @@ impl<'a> Backend for Tracer<'a> {
         let rect = transform * RectF::new(
             Vector2F::new(0.0, 0.0), Vector2F::new(1.0, 1.0)
         );
-        self.items.push(DrawItem::Image(ImageObject {
-            rect, id: xref,
-        }));
+        // self.items.push(DrawItem::Image(ImageObject {
+        //     rect, id: xref,
+        // }));
     }
     fn draw_inline_image(&mut self, im: &Arc<ImageXObject>, _resources: &Resources, transform: Transform2F, _resolve: &impl Resolve) {
         let rect = transform * RectF::new(
             Vector2F::new(0.0, 0.0), Vector2F::new(1.0, 1.0)
         );
 
-        self.items.push(DrawItem::InlineImage(InlineImageObject {
-            rect, im: im.clone()
-        }));
+        // self.items.push(DrawItem::InlineImage(InlineImageObject {
+        //     rect, im: im.clone()
+        // }));
     }
     fn draw_glyph(&mut self, _glyph: &Glyph, _mode: &DrawMode, _transform: Transform2F) {}
     fn get_font(&mut self, font_ref: &MaybeRef<PdfFont>, resolve: &impl Resolve) -> Result<Option<Arc<FontEntry>>, PdfError> {

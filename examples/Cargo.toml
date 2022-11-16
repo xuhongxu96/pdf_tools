@@ -1,0 +1,10 @@
+[package]
+name = "pdf2text"
+version = "0.1.0"
+authors = ["Hongxu Xu"]
+edition = "2021"
+
+[dependencies]
+clap = { version ="4.0.25", features=["derive"] }
+pdf = { git = "https://github.com/pdf-rs/pdf" }
+pdf_render = { path = "../render" }
