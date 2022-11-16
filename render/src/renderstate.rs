@@ -287,6 +287,9 @@ impl<'a, R: Resolve, B: Backend> RenderState<'a, R, B> {
                             TextDrawAdjusted::Spacing(offset) => {
                                 // because why not PDF…
                                 let advance = text_state.advance(-0.001 * offset);
+                                if advance > 0.1 {
+                                    span.text.push_str(" ");
+                                }
                                 span.width += advance;
                             }
                         }
