@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 use pdf::file::File;
-use pdf_render::render_page;
 use pdf_render::tracer::{DrawItem, TraceCache, Tracer};
+use pdf_render::{render_page, TextSpan};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -15,6 +15,45 @@ struct Args {
 
     #[arg(short, long)]
     page: Option<usize>,
+}
+
+fn items2text(items: &mut Vec<&TextSpan>) -> String {
+    let factor = 5.;
+
+    let norm_pos = |x: f32| (x * factor) as i32;
+
+    let mut res = String::new();
+    items.sort_by_key(|x| (x.rect.0[1] as i32, norm_pos(x.rect.0[0])));
+
+    if items.is_empty() {
+        return res;
+    }
+
+    let mut prev_y = 0.;
+    let mut prev_x = 0.;
+    for item in items.iter() {
+        let x_diff = (norm_pos(item.rect.0[0]) - norm_pos(prev_x)) as f32 / factor;
+        if !res.is_empty() {
+            if x_diff < -10. || norm_pos(item.rect.0[1]) >= norm_pos(prev_y) {
+                res += "\n";
+            }
+        }
+
+        if !res.is_empty() && !res.ends_with("\n") {
+            if x_diff > 0.1 {
+                res += " ";
+            }
+        }
+
+        res += &item.text;
+        // res += "\t";
+        // res += &format!(" ({:?}) ", item.rect);
+
+        prev_x = item.rect.0[2];
+        prev_y = item.rect.0[3];
+    }
+
+    res
 }
 
 fn main() {
@@ -41,13 +80,15 @@ fn main() {
     }
 
     let items = backend.finish();
+    let mut items: Vec<&TextSpan> = items
+        .iter()
+        .filter_map(|item| match item {
+            DrawItem::Text(text) => Some(text),
+            _ => None,
+        })
+        .collect();
 
-    let mut res = String::new();
-    for item in items {
-        if let DrawItem::Text(txt) = item {
-            res.push_str(&format!("{}\t{:?}\n", txt.text, txt.rect.0));
-        }
-    }
+    let res = items2text(&mut items);
 
     if let Some(out_path) = args.output {
         std::fs::write(out_path, res).expect("failed to write to file");
